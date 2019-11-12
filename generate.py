@@ -41,10 +41,10 @@ def convertPyArrowTypeToGlueType(pyarrowType: pa.DataType) -> str:
 @click.option('--tablename', prompt='table name', help='Table name in glue')
 @click.option('--s3-location', prompt='s3 location', help='location of parquet files in s3')
 @click.option('--partition-key', default='version', help='partition key')
-def generate(source: str, database: str, table_name: str, s3_location: str, partition_key: str) -> None:
+def generate(source: str, database: str, tablename: str, s3_location: str, partition_key: str) -> None:
     schema = pq.read_schema(source)
 
-    print(f'aws glue create-table --database-name {database} --table-input ', end=' ')
+    print(f'aws glue create-table --database-name {database} --table-input \'', end=' ')
 
     columns = []
     index = 0
@@ -58,21 +58,21 @@ def generate(source: str, database: str, table_name: str, s3_location: str, part
         index = index + 1
 
     table_input = {
-        'Name': table_name,
+        "Name": tablename,
         'StorageDescriptor': {
-            'Columns': columns
+            'Columns': columns,
+            'Location': s3_location,
+            'InputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat',
+            'OutputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat',
+            'Compressed': False,
+            'SerdeInfo': {
+                'SerializationLibrary': 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe',
+                'Parameters': {
+                    'serialization.format': '1'
+                }
+            },
         },
-        'Location': s3_location,
-        'InputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat',
-        'OutputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat',
-        'Compressed': False,
-        'SerdeInfo': {
-            'SerializationLibrary': 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe',
-            'Parameters': {
-                'serialization.format': '1'
-            }
-        },
-        'ParitionKeys': [
+        'PartitionKeys': [
             {
                 'Name': partition_key,
                 'Type': 'string'
@@ -85,7 +85,7 @@ def generate(source: str, database: str, table_name: str, s3_location: str, part
 
     }
 
-    print(jsons.dump(table_input))
+    print(jsons.dumps(table_input), end='\'')
 
 
 if __name__ == "__main__":
