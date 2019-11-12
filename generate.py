@@ -41,7 +41,8 @@ def convertPyArrowTypeToGlueType(pyarrowType: pa.DataType) -> str:
 @click.option('--s3-location', prompt='s3 location', help='location of your parquet file(s)')
 @click.option('--database', prompt='database name', help='Glue database/schema name')
 @click.option('--tablename', prompt='table name', help='Table name in glue')
-def generate(s3_location: str, database: str, tablename: str) -> None:
+@click.option('--results-bucket',  prompt='results bucket')
+def generate(s3_location: str, database: str, tablename: str, results_bucket: str) -> None:
     bucket = s3_location.split('/')[2]
     curr_prefix = '/'.join(s3_location.split('/')[3:])
     if not curr_prefix.endswith('/'):
@@ -51,13 +52,17 @@ def generate(s3_location: str, database: str, tablename: str) -> None:
     partitions = []
 
     while 'CommonPrefixes' in objects.keys():
-        first_partition = objects['CommonPrefixes'][0]['Prefix'].split('/')[1]
+        common_prefixes = objects['CommonPrefixes'][0]['Prefix'].split('/')
+        first_partition = common_prefixes[len(common_prefixes) - 2]
+        print(first_partition)
         partition_key = first_partition.split('=')[0]
         partitions = partitions + [{
             'Name': partition_key,
             'Type': 'string'
         }]
-        curr_prefix = curr_prefix + first_partition + '/'
+        curr_prefix = curr_prefix + first_partition
+        if not curr_prefix.endswith('/'):
+            curr_prefix = curr_prefix + '/'
         objects = s3.list_objects_v2(Bucket=bucket, Delimiter='/', Prefix=curr_prefix)
 
     print(curr_prefix)
@@ -69,8 +74,6 @@ def generate(s3_location: str, database: str, tablename: str) -> None:
     dataset = pq.ParquetDataset(s3_file, filesystem=fs)
     schema = dataset.schema.to_arrow_schema()
     
-  #  print(f'aws glue create-table --database-name {database} --table-input \'', end=' ')
-
     columns = []
     index = 0
     while (index < len(schema.names)):
@@ -110,7 +113,18 @@ def generate(s3_location: str, database: str, tablename: str) -> None:
         DatabaseName=database,
         TableInput=table_input
     )
-#    print(jsons.dumps(table_input), end='\'')
+
+    print("Created glue table")
+    athena = boto3.client('athena')
+    athena.start_query_execution(
+        QueryString=f'MSCK REPAIR TABLE {tablename}',
+        QueryExecutionContext={
+        'Database': database
+        },
+        ResultConfiguration={
+            'OutputLocation': results_bucket
+        }
+    )
 
 
 if __name__ == "__main__":
