@@ -3,6 +3,8 @@ from pyarrow import types
 import pyarrow.parquet as pq
 import click
 import jsons
+import s3fs
+import boto3
 
 
 def convertPyArrowTypeToGlueType(pyarrowType: pa.DataType) -> str:
@@ -36,15 +38,38 @@ def convertPyArrowTypeToGlueType(pyarrowType: pa.DataType) -> str:
 
 
 @click.command()
-@click.option('--source', prompt='parquet file location', help='location of your parquet file(s)')
+@click.option('--s3-location', prompt='s3 location', help='location of your parquet file(s)')
 @click.option('--database', prompt='database name', help='Glue database/schema name')
 @click.option('--tablename', prompt='table name', help='Table name in glue')
-@click.option('--s3-location', prompt='s3 location', help='location of parquet files in s3')
-@click.option('--partition-key', default='version', help='partition key')
-def generate(source: str, database: str, tablename: str, s3_location: str, partition_key: str) -> None:
-    schema = pq.read_schema(source)
+def generate(s3_location: str, database: str, tablename: str) -> None:
+    bucket = s3_location.split('/')[2]
+    curr_prefix = '/'.join(s3_location.split('/')[3:])
+    if not curr_prefix.endswith('/'):
+        curr_prefix = curr_prefix + '/'
+    s3 = boto3.client('s3')
+    objects = s3.list_objects_v2(Bucket=bucket, Delimiter='/', Prefix=curr_prefix)
+    partitions = []
 
-    print(f'aws glue create-table --database-name {database} --table-input \'', end=' ')
+    while 'CommonPrefixes' in objects.keys():
+        first_partition = objects['CommonPrefixes'][0]['Prefix'].split('/')[1]
+        partition_key = first_partition.split('=')[0]
+        partitions = partitions + [{
+            'Name': partition_key,
+            'Type': 'string'
+        }]
+        curr_prefix = curr_prefix + first_partition + '/'
+        objects = s3.list_objects_v2(Bucket=bucket, Delimiter='/', Prefix=curr_prefix)
+
+    print(curr_prefix)
+    objects = s3.list_objects_v2(Bucket=bucket, Delimiter='/', Prefix=curr_prefix + 'part')
+
+    s3_file = 's3://' + bucket + '/' + objects['Contents'][0]['Key']
+
+    fs = s3fs.S3FileSystem()
+    dataset = pq.ParquetDataset(s3_file, filesystem=fs)
+    schema = dataset.schema.to_arrow_schema()
+    
+  #  print(f'aws glue create-table --database-name {database} --table-input \'', end=' ')
 
     columns = []
     index = 0
@@ -72,12 +97,7 @@ def generate(source: str, database: str, tablename: str, s3_location: str, parti
                 }
             },
         },
-        'PartitionKeys': [
-            {
-                'Name': partition_key,
-                'Type': 'string'
-            }
-        ],
+        'PartitionKeys': partitions,
         'TableType': 'EXTERNAL_TABLE',
         'Parameters': {
             'EXTERNAL': 'TRUE'
@@ -85,7 +105,12 @@ def generate(source: str, database: str, tablename: str, s3_location: str, parti
 
     }
 
-    print(jsons.dumps(table_input), end='\'')
+    glue = boto3.client('glue')
+    glue.create_table(
+        DatabaseName=database,
+        TableInput=table_input
+    )
+#    print(jsons.dumps(table_input), end='\'')
 
 
 if __name__ == "__main__":
